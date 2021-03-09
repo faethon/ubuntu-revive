@@ -28,9 +28,15 @@ function die() {
 
 usage() {
         cat <<EOF
-Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-v] [-n] [-t]
+Usage: $(basename "${BASH_SOURCE[0]}") [command] [-h] [-v] [-n] [-t]
 
 💁 This script will create a backup of data needed to recreate Nuckie.
+
+Available commands:
+
+backup              Create a backup of the current system, installed packages and home directories
+restore             Restore users, system config and home directories
+
 
 Available options:
 
@@ -124,9 +130,6 @@ fi
 log "👍 Mounting succeeded and backup directory created."
 
 
-#read -rsp $'Press any key to continue...\n' -n1 key
-
-
 if [ ${revive_command} = "backup" ] ; then 
 
     # ===========================================================================
@@ -213,67 +216,36 @@ if [ ${revive_command} = "backup" ] ; then
        
     fi
 elif [ ${revive_command} = "restore" ] ; then
-    log "👷 RESTORE command started"
+    # Select restore directory
+    # TODO: make this interactive based on available directories
+    shopt -s nullglob
+    for f in ${tmpdir}/*-*-*; do
+        if [ -d $f ] ; then lastbak=$(basename $f); echo ${lastbak} ; fi
+    done
+
+    read -rp $'Enter backup directory to restore from: ('${lastbak}')' backup
+    backup=${backup:-$lastbak}
+
+    # this only checks the existence of the directory, should check for expected files
+    if [ ! -d ${tmpdir}/${backup} ] ; then 
+        die "💥 not a valid backup directory"
+    fi
+
+
+    echo "Using backup to restore from: " ${tmpdir}/${backup} 
+
+    # restore users
+    # cat passwd.old >> /etc/passwd
+    # cat group.old >> /etc/group
+    # cat shadow.old >> /etc/shadow
+    # /bin/cp gshadow.old /etc/gshadow
+
+    # restore system folders
+
+
+
+    log "👷 RESTORE command not yet implemented"
 else 
     die "💥 NO VALID command supplied"
 fi
 
-# write restore instructions based on this script
-# echo "Writing restore instructions"
-# README=$tmpdir/$today//README
-# echo "Backup and restore information" > $README
-# echo -e "------------------------------\n" >> $README
-# echo "This set of backup files have been created on" $(date) >> $README
-# echo "All files in this backup set are specific for system" $(uname -n) >> $README
-# echo "The files in this directory:" >> $README
-# echo "  - distribution.desc:        contains the distribution description to be used for reinstall" >> $README
-# echo "  - nuckie.apt-clone.tar.gz:  contains a clone of installed packages" >> $README
-# echo "  - backuproot.tar.gz:        gzipped tar-ball containing system files" >> $README 
-# echo "  - backuphome.tar.gz:        gzipped tar-ball containing home directories" >> $README 
-# echo "Additional information:" >> $README
-# echo "  - docker-compose version" $(docker-compose --version) >> $README
-# echo "  - system has fixed ip address set to: " $(hostname -I | awk '{print $1}') >> $README
-# echo -e "\nRestoring is done by:\n" >> $README 
-# echo "1. Reinstall system using standard distribution ISO for" $(lsb_release -ds) >> $README
-# echo "====" >> $README
-# echo "Note: Create the same user as part of the installation" >> $README
-# echo    "    : and use a minimal distribution ISO to limit reinstallation time." >> $README
-# echo    "    : After installation mount to the backup. For NFS mount you may have to install package nfs-common using" >> $README
-# echo    "    : sudo apt-get install nfs-common" >> $README
-# echo    "    : sudo mkdir /backup" >> $README
-# echo    "    : sudo mount -v -t nfs -o rw,noatime 192.168.178.2:/volume1/Backup/Nuckie /backup" >> $README
-# echo    "    : Furthermore, you need apt-clone to restore the installed packages. Install this using" >>$README
-# echo    "    : sudo apt-get install apt-clone" >> $README
-# echo "2. Reinstall the packages in the backup packages.list" >> $README
-# echo "====" >> $README
-# echo "First move into the directory of the backup to restore from. If the mount was succesful, this can be found in /backup" >> $README
-# echo "sudo apt-clone restore nuckie.apt-clone.tar.gz" >> $README
-# echo "3. Restore system and home files" >> $README
-# echo "====" >> $README
-# echo "sudo tar -xzf backuproot.tar.gz -C /" >> $README
-# echo "sudo tar -xzf backuphome.tar.gz -C /" >> $README
-# echo "4. Reboot and start user processes and installation" >> $README
-# echo "====" >> $README
-# echo "Install docker-compose from git" >> $README
-# echo "sudo curl -L \"https://github.com/docker/compose/releases/download/1.27.4/docker-compose-$(uname -s)-$(uname -m)\" -o /usr/local/bin/docker-compose" >> $README
-# echo "sudo chmod +x /usr/local/bin/docker-compose" >> $README
-# echo "If docker-compose works you can use the following to pull images and start the containers in docker-compose.yml" >> $README
-# echo "docker-compose up -d" >> $README
-# echo "--FJC." >> $README
-
-
-
-
-
-
-
-
-# ===========================================================================
-# =        Restore 
-# ===========================================================================
-
-
-# cat passwd.old >> /etc/passwd
-# cat group.old >> /etc/group
-# cat shadow.old >> /etc/shadow
-# /bin/cp gshadow.old /etc/gshadow
