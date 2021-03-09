@@ -158,10 +158,10 @@ if [ ${revive_command} = "backup" ] ; then
     ugidlimit=500
     awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534)' /etc/passwd > $tmpdir/$today/passwd.backup
     awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534)' /etc/group > $tmpdir/$today/group.backup
-    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534) {print $1}' /etc/passwd | tee - |egrep -f - /etc/shadow > $tmpdir/$today/shadow.backup
+    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534) {print $1}' /etc/passwd | egrep -f - /etc/shadow > $tmpdir/$today/shadow.backup
 
     # make a clone of all installed packages
-    if ! apt-clone clone --with-dpkg-repack $tmpdir/$today/nuckie ; then 
+    if ! apt-clone clone --with-dpkg-repack $tmpdir/$today/packages ; then 
         die "💥 Failed to create clone of apt packages"
     fi
 
@@ -216,6 +216,12 @@ if [ ${revive_command} = "backup" ] ; then
        
     fi
 elif [ ${revive_command} = "restore" ] ; then
+
+    # ===========================================================================
+    # =        Restore 
+    # ===========================================================================
+
+
     # Select restore directory
     # TODO: make this interactive based on available directories
     shopt -s nullglob
@@ -231,20 +237,41 @@ elif [ ${revive_command} = "restore" ] ; then
         die "💥 not a valid backup directory"
     fi
 
-
     echo "Using backup to restore from: " ${tmpdir}/${backup} 
 
+    # Ask for confirmation before starting the restore 
+    read -rp $'Are you sure to restore the configuration into the current system? (YES/no): ' confirmation
+    confirmation=${confirmation:-no}
+
+    echo $confirmation
+
+    if [ $confirmation = 'YES' ] ; then
+        log "👷 Confirmed to restore!"
+    else
+        die "💥 Bailing out of the restore command"
+    fi
+
     # restore users
-    # cat passwd.old >> /etc/passwd
-    # cat group.old >> /etc/group
-    # cat shadow.old >> /etc/shadow
-    # /bin/cp gshadow.old /etc/gshadow
+    log "🔐 Restoring users..."
+    #cat passwd.old >> /etc/passwd
+    #cat group.old >> /etc/group
+    #cat shadow.old >> /etc/shadow
+    #/bin/cp gshadow.old /etc/gshadow
 
-    # restore system folders
+    # restore apt-clone
+    log "🔐 Restoring apt packages from apt-clone..."
+    #apt-clone restore packages.apt-clone.tar.gz
+
+    # restore system files
+    log "🔐 Restoring system files..."
+    #tar -xzf ${tmpdir}/${backup}/backuproot.tar.gz /
+
+    # restore home folders
+    log "🔐 Restoring home directories..."
+    #tar -xzf ${tmpdir}/${backup}/backuphome.tar.gz /
 
 
-
-    log "👷 RESTORE command not yet implemented"
+    die "✅ Restore completed." 0
 else 
     die "💥 NO VALID command supplied"
 fi
