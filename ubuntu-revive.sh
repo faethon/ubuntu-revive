@@ -2,12 +2,12 @@
 set -Eeuo pipefail
 
 function cleanup() {
-        trap - SIGINT SIGTERM ERR EXIT
-        if [ -n "${tmpdir+x}" ]; then
-                umount $tmpdir
-                rm -rf "$tmpdir"
-                log "🚽 Deleted temporary working directory $tmpdir"
-        fi
+    trap - SIGINT SIGTERM ERR EXIT
+    if [ -n "${tmpdir+x}" ]; then
+        umount $mntdir
+        rm -rf "$tmpdir"
+        log "🚽 Deleted temporary working directory $tmpdir"
+    fi
 }
 
 trap cleanup SIGINT SIGTERM ERR EXIT
@@ -16,14 +16,14 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)
 today=$(date +"%d-%m-%Y")
 
 function log() {
-        echo >&2 -e "[$(date +"%Y-%m-%d %H:%M:%S")] ${1-}"
+    echo >&2 -e "[$(date +"%Y-%m-%d %H:%M:%S")] ${1-}"
 }
 
 function die() {
-        local msg=$1
-        local code=${2-1} # Bash parameter expansion - default exit status 1. See https://wiki.bash-hackers.org/syntax/pe#use_a_default_value
-        log "$msg"
-        exit "$code"
+    local msg=$1
+    local code=${2-1} # Bash parameter expansion - default exit status 1. See https://wiki.bash-hackers.org/syntax/pe#use_a_default_value
+    log "$msg"
+    exit "$code"
 }
 
 usage() {
@@ -42,10 +42,11 @@ Available options:
 
 -h, --help          Print this help and exit
 -v, --verbose       Print script debug info
+-u, --user-data     Path to user-data file. Required file
 -m, --skip-home     Skip creating a backup of home directories. By default one gzipped tarball
                     of the complete /home directory will be created
 -r, --skip-root     Skip creating a backup of root files
--t, --skip-tar      Skip creating a backup of both home directories and root files. This only creates
+-t, --skip-all      Skip creating a backup of both home directories and root files. This only creates
                     an apt-clone and additional system information.
 
 EOF
@@ -59,6 +60,7 @@ function parse_params() {
         notroot=0
         skiptar=0
         revive_command="unknown"
+        user_data_file=''
 
         while :; do
                 case "${1-}" in
@@ -66,10 +68,14 @@ function parse_params() {
                 restore) revive_command="restore" ;;
                 -m | --skip-home) nothome=1 ;;
                 -h | --help) usage ;;
+                -u | --user-data)
+                        user_data_file="${2-}"
+                        shift
+                        ;;
                 -v | --verbose) set -x ;;
                 -m | --skip-home) nothome=1 ;;
                 -r | --skip-root) notroot=1 ;;
-                -t | --skip-tar) skiptar=1 ;;
+                -t | --skip-all) skiptar=1 ;;
                 -?*) die "Unknown option: $1" ;;
                 *) break ;;
                 esac
@@ -91,7 +97,16 @@ function check_superuser() {
 function check_requirements() {
     log "🔎 Checking for required utilities..."
     [[ ! -x "$(command -v apt-clone)" ]] && die "💥 apt-clone is not installed."
-    [[ ! -x "$(command -v apt-mark)" ]] && die "💥 apt-mark is not installed."
+    [[ ! -x "$(command -v 7z)" ]] && die "💥 7z is not installed."
+    [[ ! -x "$(command -v sed)" ]] && die "💥 sed is not installed."
+    [[ ! -x "$(command -v curl)" ]] && die "💥 curl is not installed."
+    [[ ! -x "$(command -v mkisofs)" ]] && die "💥 mkisofs is not installed."
+
+    # for backup we need user-data file
+    if [ ${revive_command} = "backup" ] ; then 
+        [[ -z "${user_data_file}" ]] && die "💥 user-data file was not specified."
+        [[ ! -f "$user_data_file" ]] && die "💥 user-data file could not be found."
+    fi
     log "👍 All required utilities are installed."
 }
 
@@ -103,6 +118,7 @@ check_requirements
 
 
 tmpdir=$(mktemp -d)
+mntdir=$tmpdir/mnt
 distribution=$(lsb_release -ds)
 
 if [[ ! "$tmpdir" || ! -d "$tmpdir" ]]; then
@@ -119,12 +135,13 @@ BACKUP_DIR="/volume1/Backup/Nuckie"
 
 
 # mount remote NFS directory and create backup directory
-log "👷 Mounting Backup folder at NAS on $tmpdir..."
-if ! mount -t $BACKUP_TYPE -o rw,noatime $BACKUP_IP:$BACKUP_DIR $tmpdir ; then 
+mkdir -p $mntdir
+log "👷 Mounting Backup folder at NAS on $mntdir..."
+if ! mount -t $BACKUP_TYPE -o rw,noatime $BACKUP_IP:$BACKUP_DIR $mntdir ; then 
     die "💥 Mounting failed."
 fi
 # create backup directory
-if ! mkdir -p $tmpdir/$today ; then 
+if ! mkdir -p $mntdir/$today ; then 
     die "💥 Failed to create backup directory"
 fi
 log "👍 Mounting succeeded and backup directory created."
@@ -137,7 +154,7 @@ if [ ${revive_command} = "backup" ] ; then
     # ===========================================================================
 
     # directories to backup and exclude
-    SYSTEM_DIRS="/etc \
+    SYSTEM_DIRS="/etc/fstab \
                 /var/www "
     HOME_DIRS="/home"
     EXCLUDE_DIRS="--exclude=$tmpdir \
@@ -149,31 +166,26 @@ if [ ${revive_command} = "backup" ] ; then
                 --exclude=*.pid"
     
 
-    log "👷 Storing system and package information on $tmpdir/$today..."
+    log "👷 Storing system and package information on $mntdir/$today..."
     # Store current distro and installed packages
-    uname -a > $tmpdir/$today/distribution.desc
-    lsb_release -ds >> $tmpdir/$today/distribution.desc
+    uname -a > $mntdir/$today/distribution.desc
+    lsb_release -ds >> $mntdir/$today/distribution.desc
 
     # save user account info for migration
     ugidlimit=500
-    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534)' /etc/passwd > $tmpdir/$today/passwd.backup
-    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534)' /etc/group > $tmpdir/$today/group.backup
-    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534) {print $1}' /etc/passwd | egrep -f - /etc/shadow > $tmpdir/$today/shadow.backup
+    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534)' /etc/passwd > $mntdir/$today/passwd.backup
+    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534)' /etc/group > $mntdir/$today/group.backup
+    awk -v LIMIT=$ugidlimit -F: '($3>=LIMIT) && ($3!=65534) {print $1}' /etc/passwd | egrep -f - /etc/shadow > $mntdir/$today/shadow.backup
 
     # make a clone of all installed packages
-    if ! apt-clone clone --with-dpkg-repack $tmpdir/$today/packages ; then 
+    if ! apt-clone clone --with-dpkg-repack $mntdir/$today/packages >/dev/null ; then 
         die "💥 Failed to create clone of apt packages"
     fi
-
-    # mark the correct state of the packages (auto/manual)
-    apt-mark showauto > $tmpdir/$today/package.states.auto.list
-    apt-mark showmanual > $tmpdir/$today/package.states.manual.list
-    apt-mark showhold > $tmpdir/$today/package.states.hold.list
 
     log "👍 Information and clone of apt packages stored."
 
     # copy this backup.sh so we know what was used to create the backup
-    cp $(realpath $0) $tmpdir/$today/
+    cp $(realpath $0) $mntdir/$today/
 
 
     # Create backups of relevant directories
@@ -183,6 +195,7 @@ if [ ${revive_command} = "backup" ] ; then
     else 
         log "👷 Creating backup of selected system directories"
         tar -cpf - \
+            --warning=no-file-changed \
             --one-file-system \
             $EXCLUDE_DIRS \
             $SYSTEM_DIRS \
@@ -191,7 +204,7 @@ if [ ${revive_command} = "backup" ] ; then
             $SYSTEM_DIRS  \
             --one-file-system \
             | tail -1 | awk {'print $1'}) \
-            | gzip > $tmpdir/$today//backuproot.tar.gz
+            | gzip > $mntdir/$today//backuproot.tar.gz
     fi
 
     # make compressed backup of home directory
@@ -200,6 +213,7 @@ if [ ${revive_command} = "backup" ] ; then
     else 
         log "👷 Creating backup of home directories"
         tar -cpf - \
+            --warning=no-file-changed \
             --one-file-system \
             $EXCLUDE_DIRS \
             $HOME_DIRS \
@@ -208,13 +222,74 @@ if [ ${revive_command} = "backup" ] ; then
             $HOME_DIRS \
             --one-file-system \
             | tail -1 | awk {'print $1'}) \
-            | gzip > $tmpdir/$today//backuphome.tar.gz
-
-
-        # graceful exit
-        die "✅ Backup created and stored on NAS." 0
-       
+            | gzip > $mntdir/$today//backuphome.tar.gz
     fi
+
+
+    # Now create an automated install image for Ubuntu 20.04
+    # This part is mainly copied from:
+    # https://github.com/covertsh/ubuntu-autoinstall-generator
+
+    source_iso="$tmpdir/ubuntu-original-$today.iso"
+    destination_iso="$mntdir/$today/ubuntu-autoinstall-$today.iso"
+
+    # downloading and extracting current daily ISO
+    log "🌎 Downloading current daily ISO image for Ubuntu 20.04 Focal Fossa..."
+    curl --progress-bar -NSL "https://cdimage.ubuntu.com/ubuntu-server/focal/daily-live/current/focal-live-server-amd64.iso" -o "$source_iso"
+    log "👍 Downloaded and saved to $source_iso"
+    log "🔧 Extracting ISO image..."
+    7z -y -bsp2 x "$source_iso" -o"$tmpdir/iso/" >/dev/null
+    rm -rf "$tmpdir/iso/"'[BOOT]'
+    log "👍 Extracted to $tmpdir/iso"
+
+    # adding autoinstall paramaters to extracted iso
+    log "🧩 Adding autoinstall parameter to kernel command line..."
+    sed -i -e 's/---/ autoinstall  ---/g' "$tmpdir/iso/isolinux/txt.cfg"
+    sed -i -e 's/---/ autoinstall  ---/g' "$tmpdir/iso/boot/grub/grub.cfg"
+    sed -i -e 's/---/ autoinstall  ---/g' "$tmpdir/iso/boot/grub/loopback.cfg"
+    log "👍 Added parameter to UEFI and BIOS kernel command lines."
+
+    # adding user-data and meta-data
+    log "🧩 Adding user-data and meta-data files..."
+    mkdir -p "$tmpdir/iso/nocloud"
+
+    # write user-data file
+    cp "$user_data_file" "$tmpdir/iso/nocloud/user-data"
+    # write empty meta-data file
+    touch "$tmpdir/iso/nocloud/meta-data"
+
+    sed -i -e 's,---, ds=nocloud;s=/cdrom/nocloud/  ---,g' "$tmpdir/iso/isolinux/txt.cfg"
+    sed -i -e 's,---, ds=nocloud\\\;s=/cdrom/nocloud/  ---,g' "$tmpdir/iso/boot/grub/grub.cfg"
+    sed -i -e 's,---, ds=nocloud\\\;s=/cdrom/nocloud/  ---,g' "$tmpdir/iso/boot/grub/loopback.cfg"
+    log "👍 Added data and configured kernel command line."
+
+
+    # extract casper/filesystem.squashfs to add ubuntu-revive.sh
+    unsquashfs -f -d $tmpdir/unpacked-squashfs $tmpdir/iso/casper/filesystem.squashfs 
+    log "👷 Updating ISO to include restore script."
+    mkdir $tmpdir/unpacked-squashfs/restore
+    cp $(realpath $0) $tmpdir/unpacked-squashfs/restore
+    rm -f $tmpdir/iso/casper/filesystem.squashfs
+    mksquashfs $tmpdir/unpacked-squashfs $tmpdir/iso/casper/filesystem.squashfs
+ 
+
+    # update checksums and repackage iso
+    log "👷 Updating $tmpdir/iso/md5sum.txt with hashes of modified files..."
+    md5=$(md5sum "$tmpdir/iso/boot/grub/grub.cfg" | cut -f1 -d ' ')
+    sed -i -e 's,^.*[[:space:]] ./boot/grub/grub.cfg,'"$md5"'  ./boot/grub/grub.cfg,' "$tmpdir/iso/md5sum.txt"
+    md5=$(md5sum "$tmpdir/iso/boot/grub/loopback.cfg" | cut -f1 -d ' ')
+    sed -i -e 's,^.*[[:space:]] ./boot/grub/loopback.cfg,'"$md5"'  ./boot/grub/loopback.cfg,' "$tmpdir/iso/md5sum.txt"
+    log "👍 Updated hashes."
+
+    log "📦 Repackaging extracted files into an ISO image..."
+    cd "$tmpdir/iso/"
+    mkisofs -quiet -D -r -V "ubuntu-autoinstall-$today" -cache-inodes -J -l -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -o "${destination_iso}" .
+    cd "$OLDPWD"
+    log "👍 Created autoinstall image into ${destination_iso}"
+
+    # graceful exit
+    die "✅ Backup created and stored on NAS." 0
+
 elif [ ${revive_command} = "restore" ] ; then
 
     # ===========================================================================
@@ -225,7 +300,7 @@ elif [ ${revive_command} = "restore" ] ; then
     # Select restore directory
     # TODO: make this interactive based on available directories
     shopt -s nullglob
-    for f in ${tmpdir}/*-*-*; do
+    for f in ${mntdir}/*-*-*; do
         if [ -d $f ] ; then lastbak=$(basename $f); echo ${lastbak} ; fi
     done
 
@@ -233,11 +308,11 @@ elif [ ${revive_command} = "restore" ] ; then
     backup=${backup:-$lastbak}
 
     # this only checks the existence of the directory, should check for expected files
-    if [ ! -d ${tmpdir}/${backup} ] ; then 
+    if [ ! -d ${mntdir}/${backup} ] ; then 
         die "💥 not a valid backup directory"
     fi
 
-    echo "Using backup to restore from: " ${tmpdir}/${backup} 
+    echo "Using backup to restore from: " ${mntdir}/${backup} 
 
     # Ask for confirmation before starting the restore 
     read -rp $'Are you sure to restore the configuration into the current system? (YES/no): ' confirmation
@@ -248,31 +323,50 @@ elif [ ${revive_command} = "restore" ] ; then
     if [ $confirmation = 'YES' ] ; then
         log "👷 Confirmed to restore!"
     else
-        die "💥 Bailing out of the restore command"
+        die "💥 Bailing out of the restore command."
     fi
+
+    # check files
+    if [[  -f ${mntdir}/${backup}/packages.apt-clone.tar.gz \
+        && -f ${mntdir}/${backup}/passwd.backup  \
+        && -f ${mntdir}/${backup}/group.backup  \
+        && -f ${mntdir}/${backup}/shadow.backup  \
+        && -f ${mntdir}/${backup}/backuproot.tar.gz \
+        && -f ${mntdir}/${backup}/backuphome.tar.gz ]] ; then
+        log "👍 Backup files exist."
+    else
+        die "💥 Backup files missing!"
+	fi
 
     # restore users
     log "🔐 Restoring users..."
-    #cat passwd.old >> /etc/passwd
-    #cat group.old >> /etc/group
-    #cat shadow.old >> /etc/shadow
-    #/bin/cp gshadow.old /etc/gshadow
+    cat ${mntdir}/${backup}/passwd.backup >> /etc/passwd
+    cat ${mntdir}/${backup}/group.backup >> /etc/group
+    cat ${mntdir}/${backup}/shadow.backup >> /etc/shadow
 
     # restore apt-clone
     log "🔐 Restoring apt packages from apt-clone..."
-    #apt-clone restore packages.apt-clone.tar.gz
+    if ! apt-clone restore ${mntdir}/${backup}/packages.apt-clone.tar.gz ; then 
+        log "👿 apt-clone restore failed."
+    fi
 
     # restore system files
     log "🔐 Restoring system files..."
-    #tar -xzf ${tmpdir}/${backup}/backuproot.tar.gz /
+    if ! tar -xzf ${mntdir}/${backup}/backuproot.tar.gz -C / ; then 
+        log "👿 system file restore failed."
+    fi
 
     # restore home folders
     log "🔐 Restoring home directories..."
-    #tar -xzf ${tmpdir}/${backup}/backuphome.tar.gz /
+    if ! tar -xzf ${mntdir}/${backup}/backuphome.tar.gz -C / ; then 
+        log "👿 home directories restore failed."
+    fi
 
 
     die "✅ Restore completed." 0
+
 else 
+    usage
+
     die "💥 NO VALID command supplied"
 fi
-

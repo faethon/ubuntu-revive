@@ -1,0 +1,28 @@
+#cloud-config
+autoinstall:
+  version: 1
+  identity:
+    hostname: restored-system
+    password: "$6$exDY1mhS4KUYCE/2$zmn9ToZwTKLhCw.b4/b.ZRTIZM30JZ4QrOQ2aOXJ8yk96xpcCof0kxKwuX1kqLG/ygbJ1f8wxED22bTL4F46P0"
+    username: ubuntu
+  ssh:
+    install-server: yes
+    allow-pw: yes
+  network:
+    network:
+      version: 2
+      ethernets:
+        # fixed ip on ethernet, assuming only one wired connection is active
+        all-eth:
+          match:
+            name: enp*
+          dhcp4: no
+          addresses: [192.168.1.15/24]
+          gateway4: 192.168.1.1
+          nameservers:
+            addresses: [8.8.8.8]
+  packages:
+    - apt-clone
+    - nfs-common
+    - p7zip-full
+    - genisoimage
